@@ -14,3 +14,4 @@ var controller2 = scope.Resolve(typeof(Controller));
 if (controller1 != controller2) {
     throw new InvalidOperationException();
 }
+Console.WriteLine("All works fine!");
