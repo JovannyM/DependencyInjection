@@ -7,7 +7,7 @@ using DependencyInjection.Types;
 
 namespace DependencyInjection.Container;
 
-public class Container : IContainer {
+public class Container : IContainer, IDisposable, IAsyncDisposable {
     private readonly ImmutableDictionary<Type, ServiceDescriptor> _descriptors;
     private readonly ConcurrentDictionary<Type, Func<IScope, object>> _buildActivators = new();
     private readonly Scope _rootScope;
@@ -17,9 +17,10 @@ public class Container : IContainer {
         _rootScope = new(this);
     }
 
-    private class Scope : IScope {
+    private class Scope : IScope, IDisposable, IAsyncDisposable {
         private readonly Container _container;
         private readonly ConcurrentDictionary<Type, object> _scopedInstances = new();
+        private readonly ConcurrentStack<object> _disposables = new();
 
         public Scope(Container container) {
             _container = container;
@@ -27,11 +28,36 @@ public class Container : IContainer {
 
         public object Resolve(Type service) {
             var descriptor = _container.FindDescriptor(service);
-            if (descriptor.LifeTime == LifeTime.Transient)
-                return _container.CreateInstance(service, this);
-            if (descriptor.LifeTime == LifeTime.Scoped || _container._rootScope == this)
+            if (descriptor is { LifeTime: LifeTime.Transient })
+                return CreateInstanceInternal(service, this);
+            if (descriptor is { LifeTime: LifeTime.Scoped } || _container._rootScope == this)
                 return _scopedInstances.GetOrAdd(service, s => _container.CreateInstance(s, this));
-            else return _container._rootScope.Resolve(service);
+            return _container._rootScope.Resolve(service);
+        }
+
+        public void Dispose() {
+            foreach (var disposable in _disposables) {
+                if(disposable is IDisposable d)
+                    d.Dispose();
+                else if (disposable is IAsyncDisposable ad)
+                    ad.DisposeAsync().GetAwaiter().GetResult();
+            }
+        }
+
+        public async ValueTask DisposeAsync() {
+            foreach (var disposable in _disposables) {
+                if(disposable is IAsyncDisposable ad)
+                    await ad.DisposeAsync();
+                else if (disposable is IDisposable d)
+                    d.Dispose();
+            }
+        }
+
+        private object CreateInstanceInternal(Type service, Scope scope) {
+            var result = _container.CreateInstance(service, this);
+            if (result is IDisposable || result is IAsyncDisposable)
+                _disposables.Push(result);
+            return result;
         }
     }
 
@@ -72,4 +98,8 @@ public class Container : IContainer {
     private object CreateInstance(Type service, IScope scope) {
         return _buildActivators.GetOrAdd(service, BuildActivation)(scope);
     }
+
+    public void Dispose() => _rootScope.Dispose();
+
+    public ValueTask DisposeAsync() => _rootScope.DisposeAsync();
 }
